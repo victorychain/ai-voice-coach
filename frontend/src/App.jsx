@@ -1,10 +1,10 @@
-import { useState, useCallback } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import AudioUploader from './components/AudioUploader'
 import FeedbackDisplay from './components/FeedbackDisplay'
 import Header from './components/Header'
 import LoadingState from './components/LoadingState'
 
-const API_BASE = '/api'
+const API_BASE = import.meta.env.DEV ? '/api' : ''
 
 function App() {
   const [file, setFile] = useState(null)
@@ -12,7 +12,34 @@ function App() {
   const [feedback, setFeedback] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [group, setGroup] = useState('vocal')
   const [analysisType, setAnalysisType] = useState('comprehensive')
+  const [customPrompt, setCustomPrompt] = useState('')
+  const [modes, setModes] = useState([])
+  const [modelStatus, setModelStatus] = useState({})
+
+  const refreshHealth = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/health`)
+      const data = await response.json()
+      setModelStatus(data.model_status || {})
+    } catch {
+      setModelStatus({ status: 'error', error: 'API offline' })
+    }
+  }, [])
+
+  useEffect(() => {
+    refreshHealth()
+    const timer = setInterval(refreshHealth, 4000)
+    return () => clearInterval(timer)
+  }, [refreshHealth])
+
+  useEffect(() => {
+    fetch(`${API_BASE}/prompts`)
+      .then((res) => res.json())
+      .then((data) => setModes(data.modes || []))
+      .catch(() => setModes([]))
+  }, [])
 
   const handleFileSelect = useCallback((selectedFile) => {
     setFile(selectedFile)
@@ -20,6 +47,13 @@ function App() {
     setFeedback(null)
     setError(null)
   }, [])
+
+  const visibleModes = [
+    ...modes.filter((mode) => mode.group === group),
+    ...(group === 'music'
+      ? [{ id: 'custom', label: 'Ask anything', description: 'Your own question about the recording.' }]
+      : []),
+  ]
 
   const handleAnalyze = async () => {
     if (!file) return
@@ -29,21 +63,71 @@ function App() {
     setFeedback(null)
 
     try {
+      if (analysisType === 'detailed') {
+        const formData = new FormData()
+        formData.append('file', file)
+        const response = await fetch(`${API_BASE}/analyze-sync?analysis_type=detailed`, {
+          method: 'POST',
+          body: formData,
+        })
+        if (!response.ok) throw new Error(await readError(response))
+        setFeedback(await response.json())
+        return
+      }
+
       const formData = new FormData()
       formData.append('file', file)
+      const params = new URLSearchParams({ analysis_type: analysisType })
+      if (analysisType === 'custom') params.set('prompt', customPrompt)
 
-      const response = await fetch(`${API_BASE}/analyze-sync?analysis_type=${analysisType}`, {
+      const response = await fetch(`${API_BASE}/analyze-stream?${params}`, {
         method: 'POST',
         body: formData,
       })
+      if (!response.ok || !response.body) throw new Error(await readError(response))
 
-      if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.detail || 'Analysis failed')
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let text = ''
+
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const chunks = buffer.split('\n\n')
+        buffer = chunks.pop()
+        for (const chunk of chunks) {
+          const line = chunk.split('\n').find((item) => item.startsWith('data: '))
+          if (!line) continue
+          const payload = JSON.parse(line.slice(6))
+          if (payload.token) {
+            text += payload.token
+            setFeedback({
+              type: analysisType,
+              analysis: text,
+              audio_file: file.name,
+              streaming: true,
+            })
+          } else if (payload.analysis) {
+            text = payload.analysis
+            setFeedback({
+              type: analysisType,
+              analysis: text,
+              audio_file: file.name,
+            })
+          } else if (payload.error) {
+            throw new Error(payload.error)
+          }
+        }
       }
 
-      const result = await response.json()
-      setFeedback(result)
+      if (!text) throw new Error('The model returned an empty response.')
+      setFeedback({
+        type: analysisType,
+        analysis: text,
+        audio_file: file.name,
+      })
     } catch (err) {
       setError(err.message || 'Failed to analyze audio. Please try again.')
     } finally {
@@ -60,31 +144,25 @@ function App() {
 
   return (
     <div className="min-h-screen bg-pattern">
-      <Header />
-      
+      <Header modelStatus={modelStatus} />
+
       <main className="container mx-auto px-4 py-8 max-w-5xl">
-        {/* Hero Section */}
         {!file && (
           <div className="text-center mb-12">
             <h1 className="text-4xl md:text-5xl font-bold mb-4 bg-gradient-to-r from-coral-400 to-coral-600 bg-clip-text text-transparent">
-              Elevate Your Voice
+              Listen locally. Coach locally.
             </h1>
             <p className="text-lg text-slate-400 max-w-2xl mx-auto">
-              Get professional AI-powered feedback on your singing. Upload a recording and receive 
-              detailed critiques on pitch, timing, expression, and technique.
+              Upload a vocal take or a full track. NVIDIA Music Flamingo runs on this
+              machine — no Modal, no cloud model.
             </p>
           </div>
         )}
 
-        {/* Upload Zone */}
-        {!file && (
-          <AudioUploader onFileSelect={handleFileSelect} />
-        )}
+        {!file && <AudioUploader onFileSelect={handleFileSelect} />}
 
-        {/* File Selected - Ready to Analyze */}
-        {file && !loading && !feedback && (
+        {file && !feedback && (
           <div className="space-y-6">
-            {/* Selected File Card */}
             <div className="glass-card rounded-2xl p-6">
               <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-3">
@@ -103,74 +181,84 @@ function App() {
                 <button
                   onClick={handleReset}
                   className="text-slate-400 hover:text-white transition-colors"
+                  disabled={loading}
                 >
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
+                  New file
                 </button>
               </div>
 
-              {/* Audio Player */}
               {audioUrl && (
-                <audio 
-                  controls 
-                  src={audioUrl} 
+                <audio
+                  controls
+                  src={audioUrl}
                   className="w-full h-12 rounded-lg"
                   style={{ filter: 'sepia(20%) saturate(70%) grayscale(1) contrast(99%) invert(12%)' }}
                 />
               )}
             </div>
 
-            {/* Analysis Type Selection */}
-            <div className="glass-card rounded-2xl p-6">
-              <h3 className="text-lg font-medium text-white mb-4">Analysis Type</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <button
-                  onClick={() => setAnalysisType('comprehensive')}
-                  className={`p-4 rounded-xl border-2 text-left transition-all ${
-                    analysisType === 'comprehensive'
-                      ? 'border-coral-500 bg-coral-500/10'
-                      : 'border-slate-700 hover:border-slate-600'
-                  }`}
-                >
-                  <div className="flex items-center gap-3 mb-2">
-                    <div className={`w-4 h-4 rounded-full border-2 ${
-                      analysisType === 'comprehensive' ? 'border-coral-500 bg-coral-500' : 'border-slate-500'
-                    }`} />
-                    <span className="font-medium text-white">Comprehensive</span>
-                  </div>
-                  <p className="text-sm text-slate-400 ml-7">
-                    Full analysis covering all aspects in a single detailed report
-                  </p>
-                </button>
-                <button
-                  onClick={() => setAnalysisType('detailed')}
-                  className={`p-4 rounded-xl border-2 text-left transition-all ${
-                    analysisType === 'detailed'
-                      ? 'border-coral-500 bg-coral-500/10'
-                      : 'border-slate-700 hover:border-slate-600'
-                  }`}
-                >
-                  <div className="flex items-center gap-3 mb-2">
-                    <div className={`w-4 h-4 rounded-full border-2 ${
-                      analysisType === 'detailed' ? 'border-coral-500 bg-coral-500' : 'border-slate-500'
-                    }`} />
-                    <span className="font-medium text-white">Detailed</span>
-                  </div>
-                  <p className="text-sm text-slate-400 ml-7">
-                    Separate in-depth analysis for each aspect (pitch, timing, etc.)
-                  </p>
-                </button>
-              </div>
-            </div>
+            {!loading && (
+              <div className="glass-card rounded-2xl p-6">
+                <div className="flex gap-2 mb-5">
+                  {[
+                    { id: 'vocal', label: 'Vocal coach' },
+                    { id: 'music', label: 'Music Flamingo' },
+                  ].map((tab) => (
+                    <button
+                      key={tab.id}
+                      onClick={() => {
+                        setGroup(tab.id)
+                        setAnalysisType(tab.id === 'vocal' ? 'comprehensive' : 'describe')
+                      }}
+                      className={`px-4 py-2 rounded-full text-sm font-medium transition-all ${
+                        group === tab.id
+                          ? 'bg-coral-500/15 text-white border border-coral-500'
+                          : 'bg-slate-900 text-slate-300 border border-slate-700 hover:border-slate-500'
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
 
-            {/* Analyze Button */}
-            <button
-              onClick={handleAnalyze}
-              className="w-full py-4 px-6 rounded-xl bg-gradient-to-r from-coral-500 to-coral-600 text-white font-semibold text-lg shadow-lg shadow-coral-500/25 hover:shadow-coral-500/40 hover:scale-[1.02] transition-all"
-            >
-              Analyze My Performance
-            </button>
+                <h3 className="text-lg font-medium text-white mb-4">What should it do?</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {visibleModes.map((mode) => (
+                    <button
+                      key={mode.id}
+                      onClick={() => setAnalysisType(mode.id)}
+                      className={`p-4 rounded-xl border-2 text-left transition-all ${
+                        analysisType === mode.id
+                          ? 'border-coral-500 bg-coral-500/10'
+                          : 'border-slate-700 hover:border-slate-600'
+                      }`}
+                    >
+                      <span className="block font-medium text-white mb-1">{mode.label}</span>
+                      <span className="text-sm text-slate-400">{mode.description}</span>
+                    </button>
+                  ))}
+                </div>
+
+                {analysisType === 'custom' && (
+                  <textarea
+                    className="mt-4 w-full min-h-[110px] rounded-xl border border-slate-700 bg-slate-950 text-white p-3"
+                    placeholder="Ask anything about the track — harmony, lyrics, production, culture…"
+                    value={customPrompt}
+                    onChange={(event) => setCustomPrompt(event.target.value)}
+                  />
+                )}
+              </div>
+            )}
+
+            {!loading && (
+              <button
+                onClick={handleAnalyze}
+                disabled={modelStatus.status === 'loading'}
+                className="w-full py-4 px-6 rounded-xl bg-gradient-to-r from-coral-500 to-coral-600 text-white font-semibold text-lg shadow-lg shadow-coral-500/25 hover:shadow-coral-500/40 hover:scale-[1.02] transition-all disabled:opacity-60 disabled:hover:scale-100"
+              >
+                {modelStatus.status === 'loading' ? 'Waiting for GPU load…' : 'Analyze on the local GPU'}
+              </button>
+            )}
 
             {error && (
               <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400">
@@ -180,26 +268,31 @@ function App() {
           </div>
         )}
 
-        {/* Loading State */}
-        {loading && <LoadingState />}
+        {loading && !feedback && <LoadingState />}
 
-        {/* Feedback Display */}
         {feedback && (
-          <FeedbackDisplay 
-            feedback={feedback} 
+          <FeedbackDisplay
+            feedback={feedback}
             audioUrl={audioUrl}
             onReset={handleReset}
           />
         )}
       </main>
 
-      {/* Footer */}
       <footer className="py-8 text-center text-slate-500 text-sm">
-        <p>Powered by Music Flamingo | For research purposes only</p>
+        <p>Powered by NVIDIA Music Flamingo · research / non-commercial use only · no cloud inference</p>
       </footer>
     </div>
   )
 }
 
-export default App
+async function readError(res) {
+  try {
+    const data = await res.json()
+    return data.detail || JSON.stringify(data)
+  } catch {
+    return res.statusText
+  }
+}
 
+export default App

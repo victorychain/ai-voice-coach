@@ -1,8 +1,10 @@
 """
-Structured prompts for vocal critique analysis using Music Flamingo.
+Prompts for vocal coaching and Music Flamingo music understanding.
+
+Vocal-coach prompts come from audio-coach-ai. Music-understanding prompts
+match the evaluation set on https://musicflamingo.github.io/.
 """
 
-# Main comprehensive analysis prompt
 COMPREHENSIVE_CRITIQUE_PROMPT = """You are an expert vocal coach analyzing a singing performance. 
 Listen carefully to this vocal recording and provide a detailed, constructive critique.
 
@@ -22,7 +24,6 @@ For each aspect, provide:
 
 End with an overall assessment and the top 3 priority areas to work on."""
 
-# Individual aspect prompts for multi-turn analysis
 PITCH_ANALYSIS_PROMPT = """Analyze the pitch accuracy in this vocal performance. 
 Identify:
 - Overall intonation quality (sharp, flat, or centered)
@@ -70,62 +71,152 @@ IMPROVEMENT_SUGGESTIONS_PROMPT = """Based on your analysis of this vocal perform
 
 Be encouraging but honest - the goal is genuine improvement."""
 
+# Official Music Flamingo evaluation prompts from musicflamingo.github.io
+DESCRIBE_PROMPT = (
+    "Describe this track in full detail - tell me the genre, tempo, and key, "
+    "then dive into the instruments, production style, and overall mood it creates."
+)
 
-def get_critique_conversation(audio_path: str, mode: str = "comprehensive") -> list:
-    """
-    Build the conversation structure for Music Flamingo inference.
-    
-    Args:
-        audio_path: Path or URL to the audio file
-        mode: Type of analysis - "comprehensive" or specific aspect
-        
-    Returns:
-        List of conversation turns for the model
-    """
-    prompts = {
-        "comprehensive": COMPREHENSIVE_CRITIQUE_PROMPT,
-        "pitch": PITCH_ANALYSIS_PROMPT,
-        "timing": TIMING_ANALYSIS_PROMPT,
-        "breath": BREATH_CONTROL_PROMPT,
-        "expression": EXPRESSION_PROMPT,
-        "technique": TECHNIQUE_PROMPT,
-        "improvements": IMPROVEMENT_SUGGESTIONS_PROMPT,
-    }
-    
-    prompt_text = prompts.get(mode, COMPREHENSIVE_CRITIQUE_PROMPT)
-    
+CAPTION_PROMPT = (
+    "Write a rich caption that blends the technical details (genre, BPM, key, chords, mix) "
+    "with how the song feels emotionally and dynamically as it unfolds."
+)
+
+CRITIC_PROMPT = (
+    "Break the track down like a critic - list its tempo, key, and chordal motion, "
+    "then explain the textures, dynamics, and emotional impact of the performance."
+)
+
+TECHNICAL_ARTISTIC_PROMPT = (
+    "Describe this song from both a technical and artistic lens: mention tempo, harmony, "
+    "and instrumentation, but also mood, lyrical themes, and structure."
+)
+
+LYRICS_PROMPT = "Generate a structured lyric sheet from the input music."
+
+PROMPT_CATALOG = {
+    "comprehensive": {
+        "group": "vocal",
+        "label": "Comprehensive critique",
+        "description": "Full vocal-coach report: pitch, timing, breath, tone, expression, technique.",
+        "prompt": COMPREHENSIVE_CRITIQUE_PROMPT,
+    },
+    "pitch": {
+        "group": "vocal",
+        "label": "Pitch accuracy",
+        "description": "Intonation, problem intervals, and register consistency.",
+        "prompt": PITCH_ANALYSIS_PROMPT,
+    },
+    "timing": {
+        "group": "vocal",
+        "label": "Timing & rhythm",
+        "description": "Rhythmic precision, syncopation, and tempo stability.",
+        "prompt": TIMING_ANALYSIS_PROMPT,
+    },
+    "breath": {
+        "group": "vocal",
+        "label": "Breath control",
+        "description": "Support, phrase length, and strain from weak breath.",
+        "prompt": BREATH_CONTROL_PROMPT,
+    },
+    "expression": {
+        "group": "vocal",
+        "label": "Expression & dynamics",
+        "description": "Emotion, phrasing, and vocal color.",
+        "prompt": EXPRESSION_PROMPT,
+    },
+    "technique": {
+        "group": "vocal",
+        "label": "Technique",
+        "description": "Registers, vibrato, runs, and vocal-health signs.",
+        "prompt": TECHNIQUE_PROMPT,
+    },
+    "improvements": {
+        "group": "vocal",
+        "label": "Practice plan",
+        "description": "Priority fixes, exercises, and encouragement.",
+        "prompt": IMPROVEMENT_SUGGESTIONS_PROMPT,
+    },
+    "detailed": {
+        "group": "vocal",
+        "label": "Detailed breakdown",
+        "description": "Separate passes for pitch, timing, breath, expression, technique, and a practice plan.",
+        "prompt": COMPREHENSIVE_CRITIQUE_PROMPT,
+    },
+    "describe": {
+        "group": "music",
+        "label": "Full track description",
+        "description": "Genre, tempo, key, instruments, production, mood.",
+        "prompt": DESCRIBE_PROMPT,
+    },
+    "caption": {
+        "group": "music",
+        "label": "Rich caption",
+        "description": "Technical details blended with how the song feels.",
+        "prompt": CAPTION_PROMPT,
+    },
+    "critic": {
+        "group": "music",
+        "label": "Critic breakdown",
+        "description": "Tempo, key, chords, textures, dynamics, impact.",
+        "prompt": CRITIC_PROMPT,
+    },
+    "technical_artistic": {
+        "group": "music",
+        "label": "Technical + artistic",
+        "description": "Harmony and instrumentation plus mood, lyrics, form.",
+        "prompt": TECHNICAL_ARTISTIC_PROMPT,
+    },
+    "lyrics": {
+        "group": "music",
+        "label": "Lyric sheet",
+        "description": "Structured lyrics transcribed from the recording.",
+        "prompt": LYRICS_PROMPT,
+    },
+}
+
+
+def get_prompt_text(mode: str, custom_prompt: str | None = None) -> str:
+    if mode == "custom":
+        text = (custom_prompt or "").strip()
+        if not text:
+            raise ValueError("Custom mode requires a prompt.")
+        return text
+    if mode not in PROMPT_CATALOG:
+        raise ValueError(f"Unknown analysis mode: {mode}")
+    return PROMPT_CATALOG[mode]["prompt"]
+
+
+def get_critique_conversation(
+    audio_path: str,
+    mode: str = "comprehensive",
+    custom_prompt: str | None = None,
+) -> list:
     conversation = [
         {
             "role": "user",
             "content": [
-                {"type": "text", "text": prompt_text},
+                {"type": "text", "text": get_prompt_text(mode, custom_prompt)},
                 {"type": "audio", "path": audio_path},
             ],
         }
     ]
-    
     return conversation
 
 
 def get_multi_turn_critique(audio_path: str) -> list:
-    """
-    Build a multi-turn conversation for detailed analysis.
-    Returns list of conversation states for sequential inference.
-    """
-    aspects = ["pitch", "timing", "breath", "expression", "technique"]
-    conversations = []
-    
-    for aspect in aspects:
-        conversations.append({
+    aspects = ["pitch", "timing", "breath", "expression", "technique", "improvements"]
+    return [
+        {
             "aspect": aspect,
-            "conversation": get_critique_conversation(audio_path, mode=aspect)
-        })
-    
-    # Final improvements turn
-    conversations.append({
-        "aspect": "improvements", 
-        "conversation": get_critique_conversation(audio_path, mode="improvements")
-    })
-    
-    return conversations
+            "conversation": get_critique_conversation(audio_path, mode=aspect),
+        }
+        for aspect in aspects
+    ]
 
+
+def list_prompt_modes() -> list[dict]:
+    return [
+        {"id": mode_id, **{k: v for k, v in meta.items() if k != "prompt"}}
+        for mode_id, meta in PROMPT_CATALOG.items()
+    ]
